@@ -50,6 +50,7 @@ class Table:
     names: dict[str, str] = field(default_factory=dict)  # player_id -> display label
     game: bj.BlackjackGame | None = None
     deadline: float = 0.0
+    turn_deadline: float = 0.0                          # per-turn countdown deadline
 
 
 @dataclass
@@ -100,13 +101,69 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     _led(ctx).ensure_player(str(u.id), handle=u.username)
     await update.message.reply_text(
-        "Registered. Commands: /bj  /slots  /bank  /quit"
+        "Registered. Send /casino for how to play and how to add chips.\n"
+        "Commands: /bj  /slots  /bank  /cashout  /casino"
         + ("  /grant" if str(u.id) == _cfg(ctx).owner_id else ""))
+
+
+async def cmd_casino(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    cfg = _cfg(ctx)
+    await update.message.reply_text(
+        render.casino_text(cfg.venmo_handle, cfg.chips), parse_mode="HTML")
 
 
 async def cmd_bank(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     bal = _led(ctx).balance(str(update.effective_user.id))
-    await update.message.reply_text(f"Balance: {bal} points")
+    await update.message.reply_text(f"Balance: {bal} chips")
+
+
+def _nudge(ctx) -> str:
+    """Short 'you're out of chips' message pointing at the deposit path."""
+    h = _cfg(ctx).venmo_handle or "the owner"
+    if h != "the owner" and not h.startswith("@"):
+        h = "@" + h
+    return (f"Out of chips. Add funds: Venmo {h} with your Telegram @username "
+            "in the note. /casino for details.")
+
+
+async def cmd_cashout(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    cfg, u = _cfg(ctx), update.effective_user
+    uid = str(u.id)
+    led = _led(ctx)
+    led.ensure_player(uid, handle=u.username)
+    bal = led.balance(uid)
+    args = ctx.args
+    amount = venmo = None
+    if len(args) == 2 and args[0].lstrip("-").isdigit():
+        amount, venmo = int(args[0]), args[1]
+    elif len(args) == 1 and not args[0].lstrip("-").isdigit():
+        amount, venmo = bal, args[0]           # bare handle -> cash out everything
+    else:
+        await update.message.reply_text(
+            "Usage: /cashout <amount> <@venmo>   or   /cashout <@venmo> (all chips)")
+        return
+    if not cfg.owner_id:
+        await update.message.reply_text("Cashout unavailable — no owner configured.")
+        return
+    if amount <= 0:
+        await update.message.reply_text("Nothing to cash out.")
+        return
+    if amount > bal:
+        await update.message.reply_text(f"You only have {bal} chips.")
+        return
+    if not venmo.startswith("@"):
+        venmo = "@" + venmo
+    led.post(uid, -amount, "cashout")           # debit first (guards double-cashout)
+    owner_msg = (f"\U0001F4B8 Cashout request\n{_disp(u)} wants {amount} chips.\n"
+                 f"Pay: {venmo}\nTheir remaining balance: {led.balance(uid)}")
+    try:
+        await ctx.bot.send_message(int(cfg.owner_id), owner_msg)
+    except Exception:
+        led.post(uid, amount, "cashout")        # undo — owner unreachable
+        await update.message.reply_text("Couldn't reach the owner right now — try again later.")
+        return
+    await update.message.reply_text(
+        f"Cashout request sent to the owner — {amount} chips deducted.")
 
 
 async def cmd_grant(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -138,6 +195,9 @@ async def cmd_bj(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if t and t.phase == "playing":
         await update.message.reply_text("Hand in progress. You'll be able to join the next one.")
         return
+    if _led(ctx).balance(str(update.effective_user.id)) <= 0:
+        await update.message.reply_text(_nudge(ctx))
+        return
     await _open_lobby(update.effective_chat.id, gid, ctx, new_message=True)
 
 
@@ -151,14 +211,14 @@ async def _open_lobby(chat_id: int, gid: str, ctx, carry: dict[str, int] | None 
         if led.reserve_bet(pid, bet):
             t.bets[pid] = bet
         else:
-            await ctx.bot.send_message(chat_id, f"{t.names.get(pid, pid)} is out of points, sitting out.")
+            await ctx.bot.send_message(chat_id, f"{t.names.get(pid, pid)} sits out. {_nudge(ctx)}")
     t.deadline = time.monotonic() + cfg.lobby_seconds
     text = render.bj_lobby_text(_seated(t), cfg.lobby_seconds, cfg.lobby_seconds)
     kb = _kb(render.bj_lobby_keys(gid, cfg.chips))
     if t.message_id and not new_message:
-        await _edit(ctx, t.chat_id, t.message_id, text, kb)
+        await _edit(ctx, t.chat_id, t.message_id, text, kb, parse_mode="HTML")
     else:
-        msg = await ctx.bot.send_message(chat_id, text, reply_markup=kb)
+        msg = await ctx.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
         t.message_id = msg.message_id
     _cancel(ctx, f"tick:{gid}")
     ctx.job_queue.run_repeating(_tick, interval=2, first=2, name=f"tick:{gid}", data=gid)
@@ -170,7 +230,7 @@ async def _render_lobby(gid: str, ctx):
     text = render.bj_lobby_text(_seated(t), remaining, _cfg(ctx).lobby_seconds)
     kb = _kb(render.bj_lobby_keys(gid, _cfg(ctx).chips))
     if t.message_id:
-        await _edit(ctx, t.chat_id, t.message_id, text, kb)
+        await _edit(ctx, t.chat_id, t.message_id, text, kb, parse_mode="HTML")
 
 
 async def _tick(ctx: ContextTypes.DEFAULT_TYPE):
@@ -209,25 +269,33 @@ async def _deal(gid: str, ctx):
 async def _render_play(gid: str, ctx):
     t = _tables(ctx)[gid]
     if t.message_id:
-        text = render.bj_play_text(t.game, t.names)
+        remaining = max(0, int(t.turn_deadline - time.monotonic()))
+        text = render.bj_play_text(t.game, t.names, remaining, _cfg(ctx).turn_seconds)
         await _edit(ctx, t.chat_id, t.message_id, text,
                     _kb(render.bj_play_keys(t.game, gid)), parse_mode="HTML")
 
 
 def _arm_turn(gid: str, ctx):
     _cancel(ctx, f"turn:{gid}")
-    ctx.job_queue.run_once(_turn_timeout, _cfg(ctx).turn_seconds, name=f"turn:{gid}", data=gid)
+    _tables(ctx)[gid].turn_deadline = time.monotonic() + _cfg(ctx).turn_seconds
+    # tick every 2s to animate the countdown; auto-stands the seat at the deadline
+    ctx.job_queue.run_repeating(_turn_tick, interval=2, first=2, name=f"turn:{gid}", data=gid)
 
 
-async def _turn_timeout(ctx: ContextTypes.DEFAULT_TYPE):
+async def _turn_tick(ctx: ContextTypes.DEFAULT_TYPE):
     gid = ctx.job.data
     t = _tables(ctx).get(gid)
     if not t or t.phase != "playing" or t.game is None:
+        _cancel(ctx, f"turn:{gid}")
         return
-    cur = t.game.current_player()
+    if time.monotonic() < t.turn_deadline:
+        await _render_play(gid, ctx)                    # just refresh the countdown bar
+        return
+    cur = t.game.current_player()                       # deadline hit -> auto-stand
     if cur is None:
+        _cancel(ctx, f"turn:{gid}")
         return
-    t.game.action(cur, bj.Move.STAND)  # AFK -> auto-stand
+    t.game.action(cur, bj.Move.STAND)
     if t.game.state is bj.State.DEALER_TURN:
         await _settle(gid, ctx)
     else:
@@ -316,7 +384,7 @@ async def cb_blackjack(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         t.names[pid] = _disp(q.from_user)
         old = t.bets.get(pid, 0)
         if amount > led.balance(pid) + old:
-            await q.answer("Not enough points.")
+            await q.answer(_nudge(ctx), show_alert=True)
             return
         if old:
             led.apply_settle(pid, old)   # refund prior reserve before re-betting
@@ -363,6 +431,9 @@ async def cmd_slots(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cfg, led = _cfg(ctx), _led(ctx)
     uid = str(update.effective_user.id)
     led.ensure_player(uid, handle=update.effective_user.username)
+    if led.balance(uid) <= 0:
+        await update.message.reply_text(_nudge(ctx))
+        return
     s = Slot(chat_id=update.effective_chat.id, bet=cfg.chips[0])
     _slots(ctx)[gid] = s
     text = render.slots_text(None, s.bet, led.balance(uid), None)
@@ -388,7 +459,7 @@ async def cb_slots(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.answer(f"Bet {s.bet}")
     elif action == "spin":
         if led.balance(uid) < s.bet:
-            await q.answer("Not enough points.")
+            await q.answer(_nudge(ctx), show_alert=True)
             return
         led.reserve_bet(uid, s.bet)
         s.reels = slots.spin()
@@ -423,7 +494,9 @@ def build(cfg: Config) -> Application:
     app = Application.builder().token(cfg.telegram_token).build()
     app.bot_data.update(cfg=cfg, ledger=Ledger(connect(cfg.db_path)), tables={}, slots={})
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("casino", cmd_casino))
     app.add_handler(CommandHandler("bank", cmd_bank))
+    app.add_handler(CommandHandler("cashout", cmd_cashout))
     app.add_handler(CommandHandler("grant", cmd_grant))
     app.add_handler(CommandHandler("bj", cmd_bj))
     app.add_handler(CommandHandler("slots", cmd_slots))

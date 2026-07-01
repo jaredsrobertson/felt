@@ -22,7 +22,14 @@ class ButtonSpec:
 # these have no emoji presentation, so clients draw them as narrow monochrome text —
 # ranks stay full-size and readable, and columns align in a <pre> block.
 _SUIT = {"S": "\u2664", "H": "\u2661", "D": "\u2662", "C": "\u2667"}
-HOLE = "??"   # face-down card
+HOLE = "\u2593]"   # ▓] card back — one shade block + edge (thinner than ▓▓)
+
+# emoji countdown squares are double-width; count them as 2 so centering is exact.
+_WIDE = {"\U0001F7E9", "\U0001F7E8", "\U0001F7E5", "\u2B1C"}   # 🟩 🟨 🟥 ⬜
+
+
+def _dw(s: str) -> int:
+    return sum(2 if ch in _WIDE else 1 for ch in s)
 
 
 def _card(c) -> str:
@@ -30,8 +37,9 @@ def _card(c) -> str:
 
 
 def _hand(cards, hidden: int = 0) -> str:
-    shown = [_card(c) for c in cards[: len(cards) - hidden]] + [HOLE] * hidden
-    return " ".join(shown)
+    faces = [f"{_card(c)}]" for c in cards[: len(cards) - hidden]]   # right-edge ]
+    faces += [HOLE] * hidden
+    return " ".join(faces)
 
 
 def _ljust(s: str, w: int) -> str:
@@ -39,7 +47,7 @@ def _ljust(s: str, w: int) -> str:
 
 
 def _center(s: str, w: int) -> str:
-    pad = max(0, w - len(s))
+    pad = max(0, w - _dw(s))
     left = pad // 2
     return " " * left + s + " " * (pad - left)
 
@@ -54,10 +62,25 @@ def _columns(blocks: list[list[str]], gutter: int = 4) -> tuple[str, int]:
     return "\n".join(rows), max((len(r) for r in rows), default=0)
 
 
-def _table(dealer_line: str, blocks: list[list[str]]) -> str:
-    body, width = _columns(blocks)
-    header = _center(dealer_line, max(width, len(dealer_line)))
-    return f"<pre>{html.escape(header)}\n\n{html.escape(body)}</pre>"
+_SUITS_ROW = "\u2664 \u2661 \u2662 \u2667"   # ♤ ♡ ♢ ♧ (outline = text, not emoji)
+
+
+def _divider(w: int) -> str:
+    mid = f" {_SUITS_ROW} "
+    return mid.center(w, "\u2550") if w > len(mid) else mid   # ════ ♤ ♡ ♢ ♧ ════
+
+
+def _table(dealer_line: str, blocks: list[list[str]], top: str | None = None) -> str:
+    body, bw = _columns(blocks)
+    w = max(bw, _dw(dealer_line), _dw(top or ""), 24)
+    header = _center(dealer_line, w)
+    pad = " " * ((w - bw) // 2)                      # center the player block, keep alignment
+    body = "\n".join(pad + ln for ln in body.split("\n"))
+    lines = [""]                                     # 1 top margin
+    if top is not None:
+        lines += [_center(top, w), ""]               # countdown centered at top
+    lines += [header, "", "", _divider(w), "", body, "", ""]  # 2 below dealer; 2 below body
+    return f"<pre>{html.escape('\n'.join(lines))}</pre>"
 
 
 def _bar(remaining: int, total: int, segments: int = 5) -> str:
@@ -68,14 +91,41 @@ def _bar(remaining: int, total: int, segments: int = 5) -> str:
     return fill * filled + "\u2B1C" * (segments - filled)
 
 
-# ---- blackjack (lobby = normal text, table = card-glyph columns) -----------
+# ---- onboarding ------------------------------------------------------------
+def casino_text(venmo_handle: str, chips: tuple[int, ...]) -> str:
+    """Public onboarding: collapsed to a title, expands to full instructions."""
+    handle = venmo_handle or "the owner"
+    if handle != "the owner" and not handle.startswith("@"):
+        handle = "@" + handle
+    chip_list = "/".join(str(c) for c in chips)
+    body = "\n".join([
+        f"Add chips: Venmo {html.escape(handle)} and put your Telegram @username in the "
+        "payment note — no note means it can't be credited to you. 1\u00a2 = 1 chip, "
+        "credited automatically within a minute.",
+        "",
+        "Games:",
+        f"\u2660 /bj \u2014 blackjack vs the dealer. Tap a chip ({chip_list}) to join the "
+        "betting window, then Hit / Stand / Double. Everyone plays the same dealer.",
+        "\U0001F3B0 /slots \u2014 solo slot machine. Pick a chip, tap Spin.",
+        "",
+        "Money:",
+        "/bank \u2014 your chip balance",
+        "/cashout <amount> <@venmo> \u2014 request a payout (owner pays you on Venmo)",
+        "",
+        "You need chips to play. Out of chips? Just add funds above.",
+    ])
+    return (f"\U0001F3B0 <b>Welcome to the Casino</b>\n"
+            f"<blockquote expandable>{body}</blockquote>")
+
+
+# ---- blackjack (all messages are monospace <pre> for centering + margins) --
 def bj_lobby_text(seated: list[tuple[str, int]], remaining: int, total: int) -> str:
-    lines = ["Blackjack \u00b7 place your bets", _bar(remaining, total)]
-    if seated:
-        lines += [f"{name} \u00b7 {bet}" for name, bet in seated]
-    else:
-        lines.append("waiting for players\u2026")
-    return "\n".join(lines)
+    seats = [f"{name} \u00b7 {bet}" for name, bet in seated]
+    w = max([_dw(s) for s in seats] + [_dw(_bar(remaining, total)), _dw("place your bets"), 24])
+    lines = ["", _center(_bar(remaining, total), w), "", _center("place your bets", w), ""]
+    lines += [_center(s, w) for s in seats] if seats else [_center("waiting for players\u2026", w)]
+    lines.append("")
+    return f"<pre>{html.escape(chr(10).join(lines))}</pre>"
 
 
 def bj_lobby_keys(game_id: str, chips: tuple[int, ...]) -> list[list[ButtonSpec]]:
@@ -85,19 +135,21 @@ def bj_lobby_keys(game_id: str, chips: tuple[int, ...]) -> list[list[ButtonSpec]
     ]
 
 
-def bj_play_text(game: bj.BlackjackGame, names: dict[str, str]) -> str:
+def bj_play_text(game: bj.BlackjackGame, names: dict[str, str],
+                 remaining: int, total: int) -> str:
     cur = game.current_player()
     multi = len(game.seats) > 1
-    dealer = f"Dealer  {_hand(game.dealer.cards, hidden=1)}"
+    up = bj.Hand("", 0, game.dealer.cards[:-1]).total()   # dealer running total (shown cards)
+    dealer = f"{_hand(game.dealer.cards, hidden=1)}  ({up})"
     blocks = []
     for s in game.seats:
         note = ("BLACKJACK" if s.is_blackjack() else "BUST" if s.is_bust()
                 else "stand" if s.stood else f"bet {s.bet}")
         label = names.get(s.player_id, s.player_id)
         if multi and s.player_id == cur:
-            label = "> " + label   # active marker (bold can't go inside <pre>)
-        blocks.append([f"{_hand(s.cards)} ({s.total()})", label, note])
-    return _table(dealer, blocks)
+            label = "\u00bb " + label
+        blocks.append([f"{_hand(s.cards)} ({s.total()})", note, label])   # username on the bottom line
+    return _table(dealer, blocks, top=_bar(remaining, total))
 
 
 def bj_play_keys(game: bj.BlackjackGame, game_id: str) -> list[list[ButtonSpec]]:
@@ -112,13 +164,14 @@ def bj_settle_text(game: bj.BlackjackGame, settlements: list[bj.Settlement],
                    names: dict[str, str]) -> str:
     by = {s.player_id: s for s in settlements}
     badges = {"win": "WIN", "lose": "LOSE", "push": "PUSH", "blackjack": "BLACKJACK"}
-    dealer = f"Dealer  {_hand(game.dealer.cards)}  ({game.dealer.total()})"
+    dealer = f"{_hand(game.dealer.cards)}  ({game.dealer.total()})"     # no label
     blocks = []
     for s in game.seats:
         st = by[s.player_id]
         d = f"+{st.delta}" if st.delta > 0 else str(st.delta)
         blocks.append([f"{_hand(s.cards)} ({s.total()})",
-                       names.get(s.player_id, s.player_id), f"{badges[st.outcome.value]} {d}"])
+                       f"{badges[st.outcome.value]} {d}",
+                       names.get(s.player_id, s.player_id)])            # username on the bottom line
     return _table(dealer, blocks)
 
 

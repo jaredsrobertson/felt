@@ -28,8 +28,10 @@ as state changes. Engines are pure (no telegram, no db) and unit-tested.
 
 ```
 /start    register
-/bank     show points balance
-/grant    (owner only) add points to your balance: /grant <amount>
+/casino   onboarding: how to add chips + play (collapsible, safe to post in-group)
+/bank     show chip balance
+/cashout  request a payout: /cashout <amount> <@venmo>  or  /cashout <@venmo> (all)
+/grant    (owner only) add chips to your balance: /grant <amount>
 /bj       open a blackjack table (self-running loop, below)
 /slots    open a slot machine (solo)
 /quit     close the table / machine in this chat (or tap the X)
@@ -81,6 +83,21 @@ Append-only ledger; balance = `SUM(delta)`. Never a stored integer.
     balance).
   - A self-deposit ("you added money to your Venmo balance") is credited to `OWNER_ID`.
   - Anything else is ignored.
+
+### Onboarding & gating
+
+`/casino` posts a collapsible (expandable-blockquote) message anyone can call: it
+shows the Venmo deposit target + the memo rule, the game commands, and how to cash
+out. Players need chips to play — `/bj` and `/slots` are gated at zero balance, and a
+spin/bet/re-bet you can't cover shows an "add funds" nudge instead. Set `VENMO_HANDLE`
+so the message and nudges can name your Venmo.
+
+### Cashout
+
+`/cashout <amount> <@venmo>` (or `/cashout <@venmo>` for the whole balance) debits the
+chips immediately and DMs the owner the request (user, amount, their Venmo, remaining
+balance). Payout is manual — the owner pays on Venmo. If the owner can't be reached the
+debit is rolled back. The group only sees a terse confirmation, not the Venmo handle.
 
   Classification leans on Venmo's subject wording, which varies — the marker lists
   (`RECEIVED_MARKERS`, `ADDED_MARKERS`) are at the top of `venmo/parser.py`; check a

@@ -10,6 +10,7 @@ class Config:
     telegram_token: str
     db_path: str = "felt.db"
     owner_id: str = ""              # telegram id: owns self-deposits + /grant
+    venmo_handle: str = ""          # shown in onboarding/nudges as the deposit target
     bj_decks: int = 6
     bj_dealer_hits_soft_17: bool = False
     lobby_seconds: int = 10         # betting window before auto-deal
@@ -30,6 +31,7 @@ class Config:
             telegram_token=token,
             db_path=os.environ.get("FELT_DB", "felt.db"),
             owner_id=os.environ.get("OWNER_ID", ""),
+            venmo_handle=os.environ.get("VENMO_HANDLE", ""),
             bj_decks=int(os.environ.get("BJ_DECKS", "6")),
             bj_dealer_hits_soft_17=os.environ.get("BJ_HIT_SOFT_17", "0") == "1",
             lobby_seconds=int(os.environ.get("LOBBY_SECONDS", "10")),

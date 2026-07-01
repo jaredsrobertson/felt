@@ -59,8 +59,8 @@ def test_play_text_has_dealer_and_player():
     g = bj.BlackjackGame(rng=random.Random(0))
     g.add_seat("1", 50)
     g.deal()
-    text = render.bj_play_text(g, {"1": "@jared"})
-    assert "Dealer" in text and "@jared" in text and "(" in text  # name + total present
+    text = render.bj_play_text(g, {"1": "@jared"}, 20, 25)
+    assert "@jared" in text and "(" in text        # player label + total present
 
 
 def test_settle_text_shows_outcome():
@@ -72,3 +72,11 @@ def test_settle_text_shows_outcome():
     g.dealer_play()
     text = render.bj_settle_text(g, g.settle(), {"1": "@jared"})
     assert any(b in text for b in ("WIN", "LOSE", "PUSH", "BLACKJACK"))
+
+
+def test_casino_text_has_handle_and_memo_rule():
+    text = render.casino_text("jared-r", (5, 10, 25))
+    assert "@jared-r" in text                      # deposit target shown
+    assert "note" in text.lower()                  # memo instruction present
+    assert "expandable" in text                    # collapsible in the group
+    assert "/bj" in text and "/slots" in text and "/cashout" in text
