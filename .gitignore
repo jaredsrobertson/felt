@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+felt.db
+credentials.json
+token.json

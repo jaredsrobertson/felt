@@ -1,0 +1,13 @@
+From: Venmo <venmo@venmo.com>
+To: you@example.com
+Subject: You received $5.00 from Hermes Bot
+Message-ID: <abc123.test@venmo.com>
+Content-Type: text/html; charset="utf-8"
+MIME-Version: 1.0
+
+<html><body>
+<p>Hermes Bot paid you</p>
+<h1>$5.00</h1>
+<p>Note: @jared bj</p>
+<p>Transfer to your bank or keep it in Venmo.</p>
+</body></html>

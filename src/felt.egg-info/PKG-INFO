@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: felt
+Version: 0.1.0
+Summary: Points-based Telegram card room: blackjack (vs bot dealer) + Texas Hold'em, funded by Venmo email deposits.
+Requires-Python: >=3.11
+Requires-Dist: python-telegram-bot[job-queue]<22,>=21
+Requires-Dist: python-dotenv>=1.0
+Requires-Dist: google-api-python-client>=2.0
+Requires-Dist: google-auth-oauthlib>=1.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"

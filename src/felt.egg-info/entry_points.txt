@@ -1,0 +1,2 @@
+[console_scripts]
+felt-bot = felt.bot.app:main
